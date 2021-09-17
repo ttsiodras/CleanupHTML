@@ -1,4 +1,4 @@
-TARGET:=scanner.py
+TARGET:=createdb.py cleanup_stale.py
 PYTHON:=python3
 VENV:=.venv
 
