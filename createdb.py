@@ -34,7 +34,7 @@ def main():
                 continue
             source = os.path.realpath(source)
             set_of_all_htmls.add(source)
-            folder = re.match(u, source).group(1)
+            folder = u.match(source).group(1)
             m = t.match(m.group(2))
             while m:
                 link = m.group(1)
