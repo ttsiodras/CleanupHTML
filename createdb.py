@@ -12,35 +12,38 @@ from typing import List, Any
 
 
 def process_file(producer_Q, consumer_Q):
-    t = re.compile(r'^.*?href="([^"].*?)"(.*)')
+    t = re.compile(r'^.*?href="([^"]*)"(.*)')
     u = re.compile(r'^(.*)/[^/]*$')
     v = re.compile(r'^(.*)#.*$')
 
     references = defaultdict(set)
     while True:
         work_item = consumer_Q.get()
-        filename = work_item
-        if filename == "":
-            # print("\n[-] Worked instructed to abort. Worker exiting...")
-            break
-        folder = u.match(filename).group(1)
-        for line in open(filename):
-            if 'href' not in line:
-                continue
-            m = t.match(line)
-            while m:
-                link = m.group(1)
-                if link.startswith('#'):
-                    m = t.match(m.group(2))
+        filename = ""  # Appease pylint
+        for filename in work_item:
+            if filename == "":
+                # print("\n[-] Worker instructed to abort. Exiting...")
+                break
+            folder = u.match(filename).group(1)
+            for line in open(filename):
+                if 'href' not in line:
                     continue
-                q = v.match(link)
-                if q:
-                    link = q.group(1)
-                realp = os.path.realpath(folder + os.sep + link)
-                if os.path.exists(realp):
-                    references[filename].add(realp)
-                m = t.match(m.group(2))
-        print("\r[-] Remaining: %6d" % consumer_Q.qsize(), end='')
+                m = t.match(line)
+                while m:
+                    link = m.group(1)
+                    if link.startswith('#'):
+                        m = t.match(m.group(2))
+                        continue
+                    q = v.match(link)
+                    if q:
+                        link = q.group(1)
+                    realp = os.path.realpath(folder + os.sep + link)
+                    if os.path.exists(realp):
+                        references[filename].add(realp)
+                    m = t.match(m.group(2))
+            print("\r[-] Remaining: %6d" % consumer_Q.qsize(), end='')
+        if filename == "":
+            break
     producer_Q.put(references)
 
 
@@ -62,17 +65,37 @@ def main():
     total = len(all_html_files)
     print("[-] Queueing %d HTML files..." % total)
 
-    for unused in range(multiprocessing.cpu_count()):
+    cores = multiprocessing.cpu_count()
+    for unused in range(cores):
         proc = multiprocessing.Process(
             target=process_file, args=(producer_Q, consumer_Q))
         list_of_processes.append(proc)
         proc.start()
 
+    # Trade-off between too many and too few context-switches.
+    #
+    # In theory, spliting the list exactly by number-of-cores,
+    # creates a perfect workload for each of the 'cores'.
+    # Sadly, that's not the case - because the .html files
+    # may or may not have 'href's; meaning that one task may
+    # finish quite quickly, and have nothing to do.
+    #
+    # On the other end, if we split by too much, we waste
+    # time in the workers context-switching (to read from the
+    # consumer_Q) instead of processing HTML hrefs!
+    batch = []
+    batch_size = len(all_html_files) / (10*cores)
+
     for idx, f in enumerate(all_html_files):
-        consumer_Q.put(f)
+        batch.append(f)
+        if len(batch) >= batch_size:
+            consumer_Q.put(batch)
+            batch = []
+    if batch:
+        consumer_Q.put(batch)
 
     for proc in list_of_processes:
-        consumer_Q.put("")
+        consumer_Q.put([""])
 
     set_of_all_htmls = set(all_html_files)
     references = defaultdict(set)
@@ -83,7 +106,7 @@ def main():
                 references_computed = producer_Q.get()
                 if idx == 0:
                     print("")
-                print("[-] Obtained result from worker %d" % idx)
+                # print("[-] Obtained result from worker %d" % idx)
                 for k, v_list in references_computed.items():
                     for v in v_list:
                         references[k].add(v)
@@ -95,7 +118,7 @@ def main():
         if proc.exitcode != 0:
             print("[x] Failure in one of the child processes...")
             sys.exit(1)
-    print("[-] Dumping set_of_all_htmls and references...")
+    print("\n[-] Dumping set_of_all_htmls and references...")
     pickle.dump(set_of_all_htmls, open("set_of_all_htmls", "wb"))
     pickle.dump(references, open("references", "wb"))
     print("[-] All done.")
