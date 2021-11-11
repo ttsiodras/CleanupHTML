@@ -41,7 +41,7 @@ def process_file(producer_Q, consumer_Q):
                     if os.path.exists(realp):
                         references[filename].add(realp)
                     m = t.match(m.group(2))
-            print("\r[-] Remaining: %6d" % consumer_Q.qsize(), end='')
+            print("\r[-] Remaining batches: %d " % consumer_Q.qsize(), end='')
         if filename == "":
             break
     producer_Q.put(references)
@@ -52,6 +52,7 @@ def main():
         print("Usage: " + sys.argv[0] + " <folderWithHTML>")
         sys.exit(1)
 
+    print("[-] Scanning for HTML files...")
     all_html_files = []
     for root, unused_dirs, files in os.walk(sys.argv[1]):
         for f in files:
@@ -63,14 +64,12 @@ def main():
     consumer_Q = multiprocessing.Queue()  # type: Any
 
     total = len(all_html_files)
-    print("[-] Queueing %d HTML files..." % total)
 
     cores = multiprocessing.cpu_count()
     for unused in range(cores):
         proc = multiprocessing.Process(
             target=process_file, args=(producer_Q, consumer_Q))
         list_of_processes.append(proc)
-        proc.start()
 
     # Trade-off between too many and too few context-switches.
     #
@@ -84,36 +83,40 @@ def main():
     # time in the workers context-switching (to read from the
     # consumer_Q) instead of processing HTML hrefs!
     batch = []
-    batch_size = len(all_html_files) / (10*cores)
+    batch_size = total / (10*cores)
 
-    for idx, f in enumerate(all_html_files):
+    for f in all_html_files:
         batch.append(f)
         if len(batch) >= batch_size:
             consumer_Q.put(batch)
             batch = []
     if batch:
         consumer_Q.put(batch)
+    print("[-] Queueing %d HTML files as %d batches..." % (
+        total, consumer_Q.qsize()))
 
+    # Put markers signifying "no more data" for all workers
     for proc in list_of_processes:
         consumer_Q.put([""])
+
+    # Start them all!
+    for proc in list_of_processes:
+        proc.start()
 
     set_of_all_htmls = set(all_html_files)
     references = defaultdict(set)
 
-    for idx, proc in enumerate(list_of_processes):
+    for proc in list_of_processes:
         while True:
             try:
                 references_computed = producer_Q.get()
-                if idx == 0:
-                    print("")
-                # print("[-] Obtained result from worker %d" % idx)
                 for k, v_list in references_computed.items():
                     for v in v_list:
                         references[k].add(v)
                 break
             except queue.Empty:
                 time.sleep(1)
-    for idx, proc in enumerate(list_of_processes):
+    for proc in list_of_processes:
         proc.join()
         if proc.exitcode != 0:
             print("[x] Failure in one of the child processes...")
